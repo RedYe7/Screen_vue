@@ -641,6 +641,21 @@ function markFuelGasReviewed(gasType, reviewerName) {
     draft.gasPackets[gasType].reviewed = true;
     draft.gasPackets[gasType].reviewedBy = reviewerName;
     draft.gasPackets[gasType].reviewedAt = nowLabel();
+    draft.gasPackets[gasType].reviewStatus = "approved";
+    draft.gasPackets[gasType].reviewRejectReason = "";
+    return draft;
+  });
+}
+
+function saveFuelReviewDecision(gasType, decision = {}) {
+  updateFuelPlanningPacket((draft) => {
+    if (!draft.gasPackets[gasType]) return draft;
+    const status = decision.status || "approved";
+    draft.gasPackets[gasType].reviewStatus = status;
+    draft.gasPackets[gasType].reviewed = status === "approved";
+    draft.gasPackets[gasType].reviewedBy = decision.reviewedBy || currentUser.value?.roleLabel || "指挥人员";
+    draft.gasPackets[gasType].reviewedAt = nowLabel();
+    draft.gasPackets[gasType].reviewRejectReason = status === "rejected" ? decision.reason || "" : "";
     return draft;
   });
 }
@@ -673,6 +688,76 @@ function saveGenericFlowCalendar(flowId, gasType, payload) {
     ...next[flowId].gasPackets[gasType],
     ...(Array.isArray(payload) ? { calendarPlans: clone(payload) } : clone(payload || {}))
   };
+  saveGenericPlanningPackets(next);
+}
+
+function deleteCalendarPlan(flowId, gasType, planId) {
+  if (!planId) return;
+  if (flowId === "fuel") {
+    updateFuelPlanningPacket((draft) => {
+      const packet = draft.gasPackets?.[gasType];
+      if (!packet) return draft;
+      packet.calendarPlans = (packet.calendarPlans || []).filter((plan) => plan.id !== planId);
+      packet.conflictRecords = (packet.conflictRecords || []).filter((record) => record.planId !== planId);
+      packet.planStatus = packet.planStatus === "executing" ? packet.planStatus : "draft";
+      packet.lastEditedBy = currentUser.value?.roleLabel || "岗位人员";
+      return draft;
+    });
+    return;
+  }
+
+  const next = clone(genericPlanningPackets.value);
+  const packet = next[flowId]?.gasPackets?.[gasType];
+  if (!packet) return;
+  packet.calendarPlans = (packet.calendarPlans || []).filter((plan) => plan.id !== planId);
+  packet.conflictRecords = (packet.conflictRecords || []).filter((record) => record.planId !== planId);
+  packet.planStatus = packet.planStatus === "executing" ? packet.planStatus : "draft";
+  packet.lastEditedBy = currentUser.value?.roleLabel || "岗位人员";
+  next[flowId].lastUpdatedAt = nowLabel();
+  saveGenericPlanningPackets(next);
+}
+
+function deleteCalendarWorkDay(flowId, gasType, planId, workDayId) {
+  if (!planId || !workDayId) return;
+  const updatePlan = (plan) => {
+    if (plan.id !== planId) return plan;
+    const workDays = (plan.workDays || []).filter((workDay) => workDay.id !== workDayId);
+    const dates = workDays.map((item) => item.dateIso).filter(Boolean).sort();
+    return {
+      ...plan,
+      workDays,
+      startDate: dates[0] || plan.startDate,
+      endDate: dates[dates.length - 1] || plan.endDate
+    };
+  };
+
+  if (flowId === "fuel") {
+    updateFuelPlanningPacket((draft) => {
+      const packet = draft.gasPackets?.[gasType];
+      if (!packet) return draft;
+      packet.calendarPlans = (packet.calendarPlans || []).map(updatePlan);
+      packet.conflictRecords = (packet.conflictRecords || []).map((record) => ({
+        ...record,
+        conflicts: (record.conflicts || []).filter((item) => item.workDayId !== workDayId)
+      }));
+      packet.planStatus = packet.planStatus === "executing" ? packet.planStatus : "draft";
+      packet.lastEditedBy = currentUser.value?.roleLabel || "岗位人员";
+      return draft;
+    });
+    return;
+  }
+
+  const next = clone(genericPlanningPackets.value);
+  const packet = next[flowId]?.gasPackets?.[gasType];
+  if (!packet) return;
+  packet.calendarPlans = (packet.calendarPlans || []).map(updatePlan);
+  packet.conflictRecords = (packet.conflictRecords || []).map((record) => ({
+    ...record,
+    conflicts: (record.conflicts || []).filter((item) => item.workDayId !== workDayId)
+  }));
+  packet.planStatus = packet.planStatus === "executing" ? packet.planStatus : "draft";
+  packet.lastEditedBy = currentUser.value?.roleLabel || "岗位人员";
+  next[flowId].lastUpdatedAt = nowLabel();
   saveGenericPlanningPackets(next);
 }
 
@@ -780,8 +865,11 @@ export function usePlatformState() {
     saveFuelPlanningPacket,
     updateFuelPlanningPacket,
     markFuelGasReviewed,
+    saveFuelReviewDecision,
     saveFuelGasCalendar,
     saveGenericFlowCalendar,
+    deleteCalendarPlan,
+    deleteCalendarWorkDay,
     saveGlobalKeyNode,
     removeGlobalKeyNode,
     addMonitoringWork,

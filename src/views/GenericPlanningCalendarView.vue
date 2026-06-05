@@ -191,6 +191,47 @@ const smartOptimizeModal = reactive({
   reason: ""
 });
 
+const repairRequestDetail = reactive({
+  open: false,
+  id: ""
+});
+
+const repairRequests = [
+  {
+    id: "repair-req-oxygen-pump",
+    equipmentName: "氧气系统低温泵",
+    healthStatus: "轴承温升异常",
+    priority: "高",
+    startDate: "2026-05-12",
+    endDate: "2026-05-16",
+    personnel: ["周工", "赵工"],
+    equipment: ["维修工装箱", "检测仪表"],
+    description: "健康监测系统连续两次上报轴承温升超过阈值，建议安排隔离、检修、复测和质量确认。"
+  },
+  {
+    id: "repair-req-valve",
+    equipmentName: "二号供气阀组",
+    healthStatus: "阀位反馈漂移",
+    priority: "中",
+    startDate: "2026-05-18",
+    endDate: "2026-05-21",
+    personnel: ["陈工", "李工"],
+    equipment: ["标校设备", "维护终端"],
+    description: "阀位反馈存在轻微漂移，需完成标校、维修执行、复测确认和记录归档。"
+  },
+  {
+    id: "repair-req-control",
+    equipmentName: "供气控制柜",
+    healthStatus: "通信链路间歇告警",
+    priority: "高",
+    startDate: "2026-05-20",
+    endDate: "2026-05-24",
+    personnel: ["周工", "吴工"],
+    equipment: ["供气控制柜", "记录终端"],
+    description: "健康监测系统提示通信链路间歇告警，需排查接插件、复测通信状态并归档。"
+  }
+];
+
 const editablePlans = ref([]);
 const localConflictRecords = ref([]);
 const localPlanStatus = ref("idle");
@@ -846,19 +887,19 @@ function buildConflictDetail({
 
 function getConflictReasonFromItem(item) {
   const typeText = `${item.type || ""}${item.message || ""}`;
-  if (typeText.includes("人员") || typeText.includes("浜哄憳")) {
+  if (typeText.includes("人员")) {
     return `${describeList(item.highlightPeople)}在同一日期窗口被两个计划同时占用，无法同时执行两项工作。`;
   }
   if (typeText.includes("设备") || typeText.includes("资源")) {
     return `${describeList(item.highlightEquipment)}在同一日期窗口被两个计划同时占用，存在设备资源共占。`;
   }
-  if (typeText.includes("同名") || typeText.includes("工作") || typeText.includes("宸ヤ綔")) {
+  if (typeText.includes("同名") || typeText.includes("工作")) {
     return "两个同名或同类工作在同一日期窗口重复排布，容易造成重复执行、职责边界不清或资源重复占用。";
   }
-  if (typeText.includes("节假") || typeText.includes("鑺傚亣")) {
+  if (typeText.includes("节假")) {
     return "计划窗口进入节假日，容易影响人员值守、设备保障和现场协调响应。";
   }
-  if (typeText.includes("休息") || typeText.includes("浼戞伅")) {
+  if (typeText.includes("休息")) {
     return "计划窗口落在双休日，岗位值守、人员到位和保障资源通常低于工作日配置。";
   }
   if (typeText.includes("关键") || typeText.includes("锁定")) {
@@ -874,7 +915,7 @@ function finalizeConflictDetails(conflicts, candidate, comparisonPlans) {
       (plan) => plan.name === item.relatedPlanName || item.key?.includes(plan.id)
     );
     const typeText = `${item.type || ""}${item.message || ""}`;
-    const isPeopleConflict = typeText.includes("人员") || typeText.includes("浜哄憳");
+    const isPeopleConflict = typeText.includes("人员");
     const isEquipmentConflict = typeText.includes("设备");
     return {
       ...item,
@@ -2009,6 +2050,52 @@ function generateCalendarPlan() {
   showToast(`${flowConfig.value.title}已生成草稿计划，可继续拖拽调整。`);
 }
 
+const selectedRepairRequest = computed(() =>
+  repairRequests.find((item) => item.id === repairRequestDetail.id) || null
+);
+
+function openRepairRequestDetail(request) {
+  repairRequestDetail.id = request.id;
+  repairRequestDetail.open = true;
+}
+
+function closeRepairRequestDetail() {
+  repairRequestDetail.open = false;
+  repairRequestDetail.id = "";
+}
+
+function generateRepairPlanFromRequest(request) {
+  if (!request || props.flowId !== "repair" || !isCommander.value) return;
+  const actionNames = ["安全隔离", "维修执行", "复测确认", "质量记录"];
+  const plan = normalizePlanMeta({
+    id: `repair-${activeGasType.value}-${request.id}`,
+    name: `${activeGasLabel.value}系统${request.equipmentName}维修计划`,
+    color: getFlowPlanColor(),
+    startDate: request.startDate,
+    endDate: request.endDate,
+    assignees: [...request.personnel],
+    equipment: [...request.equipment],
+    constraintIds: ["skip-weekends", "device-maintenance-window", "personnel-busy"],
+    workDays: actionNames.map((actionLabel, index) => ({
+      id: `${request.id}-work-${index + 1}`,
+      dateIso: addDays(request.startDate, Math.min(index, diffDays(request.startDate, request.endDate))),
+      actionLabel,
+      timeRange: `${String(8 + index).padStart(2, "0")}:00-${String(9 + index).padStart(2, "0")}:00`,
+      personnel: [...request.personnel],
+      equipment: [...request.equipment],
+      position: `${activeGasLabel.value}系统维修岗`,
+      status: "草稿",
+      sortKey: index,
+      manualLocked: false
+    }))
+  });
+  const nextPlans = [plan, ...editablePlans.value.filter((item) => item.id !== plan.id)];
+  const conflicts = detectCrossFlowConflicts(nextPlans);
+  applyGeneratedPlans(nextPlans, conflicts.length ? appendConflictRecord(plan, conflicts) : localConflictRecords.value);
+  closeRepairRequestDetail();
+  showToast("日历计划生成成功");
+}
+
 function beginPlanDrag(planId, workDayId, event) {
   if (!isCommander.value) return;
   const stripLayer = event.currentTarget.closest(".gantt-row-track") || event.currentTarget.closest(".calendar-strip-layer");
@@ -2334,6 +2421,45 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <section v-if="props.flowId === 'repair'" class="panel">
+        <div class="panel-head">
+          <div>
+            <h3>装备维修需求</h3>
+            <div class="muted">展示健康监测系统传入的装备维修请求，可查看详情并一键生成维修日历计划。</div>
+          </div>
+          <span class="chip active">{{ repairRequests.length }} 条需求</span>
+        </div>
+        <table class="fuel-report-table">
+          <thead>
+            <tr>
+              <th>装备</th>
+              <th>健康状态 / 故障</th>
+              <th>建议窗口</th>
+              <th>优先级</th>
+              <th>人员</th>
+              <th>设备</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="request in repairRequests" :key="request.id">
+              <td>{{ request.equipmentName }}</td>
+              <td>{{ request.healthStatus }}</td>
+              <td>{{ formatDisplayDate(request.startDate) }} - {{ formatDisplayDate(request.endDate) }}</td>
+              <td><span class="chip" :class="{ warning: request.priority === '高' }">{{ request.priority }}</span></td>
+              <td>{{ request.personnel.join("、") }}</td>
+              <td>{{ request.equipment.join("、") }}</td>
+              <td>
+                <div class="button-row">
+                  <button class="ghost small" type="button" @click="openRepairRequestDetail(request)">查看详情</button>
+                  <button class="button small" type="button" @click="generateRepairPlanFromRequest(request)">生成计划</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
       <section class="panel smart-assist-panel">
         <div class="panel-head">
           <div>
@@ -2571,6 +2697,42 @@ onBeforeUnmount(() => {
           <button v-if="keyNodeModal.id" class="danger-btn" type="button" @click="removeKeyNode()">删除</button>
           <button class="button" type="button" @click="saveKeyNode">保存关键节点</button>
         </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" :class="{ open: repairRequestDetail.open }" @click.self="closeRepairRequestDetail">
+      <div class="modal-card key-node-modal">
+        <template v-if="selectedRepairRequest">
+          <div class="panel-head">
+            <div>
+              <h3>{{ selectedRepairRequest.equipmentName }}维修需求</h3>
+              <div class="muted">{{ selectedRepairRequest.healthStatus }} · {{ selectedRepairRequest.priority }}优先级</div>
+            </div>
+            <span class="chip warning">健康监测传入</span>
+          </div>
+          <div class="detail-list" style="margin-top: 14px;">
+            <div class="notice-card">
+              <span>建议窗口：{{ formatDisplayDate(selectedRepairRequest.startDate) }} - {{ formatDisplayDate(selectedRepairRequest.endDate) }}</span>
+              <span class="accent">排程依据</span>
+            </div>
+            <div class="notice-card">
+              <span>所需人员：{{ selectedRepairRequest.personnel.join("、") }}</span>
+              <span class="accent">人员</span>
+            </div>
+            <div class="notice-card">
+              <span>所需设备：{{ selectedRepairRequest.equipment.join("、") }}</span>
+              <span class="accent">设备</span>
+            </div>
+            <div class="notice-card">
+              <span>{{ selectedRepairRequest.description }}</span>
+              <span class="warning">说明</span>
+            </div>
+          </div>
+          <div class="button-row" style="margin-top: 18px;">
+            <button class="ghost" type="button" @click="closeRepairRequestDetail">关闭</button>
+            <button class="button" type="button" @click="generateRepairPlanFromRequest(selectedRepairRequest)">生成计划</button>
+          </div>
+        </template>
       </div>
     </div>
 

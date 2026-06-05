@@ -5,7 +5,7 @@ const router = useRouter();
 
 const modules = [
   { title: "流程自主规划", desc: "统一总入口，支持 6 类专项流程规划与拖拽编排。", to: "/planning" },
-  { title: "流程动态监控", desc: "跟踪工作完成情况、冲突预警和流程动态优化。", to: "/monitoring" },
+  { title: "日程规划", desc: "跟踪工作完成情况、冲突预警和流程动态优化。", to: "/monitoring" },
   { title: "流程智能评估", desc: "展示态势、进度、风险和历史流程比对。", to: "/evaluation" },
   { title: "流程智能查询", desc: "支持历史流程、执行计划和多维条件检索。", to: "/query" },
   { title: "工作规则管理", desc: "维护工作项目、约束、人员、算法和流程模板。", to: "/rules" }

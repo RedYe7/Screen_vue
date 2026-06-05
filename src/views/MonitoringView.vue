@@ -1,7 +1,9 @@
 ﻿<script setup>
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { usePlatformState } from "../composables/usePlatformState";
 
+const router = useRouter();
 const {
   currentUser,
   executedPlans,
@@ -18,6 +20,10 @@ const {
   removeExecutedPlan,
   saveFuelGasCalendar,
   saveGenericFlowCalendar,
+  saveGlobalKeyNode,
+  removeGlobalKeyNode,
+  deleteCalendarPlan,
+  deleteCalendarWorkDay,
   addMonitoringWork,
   saveWorkRule,
   saveWorkActionOverride
@@ -98,7 +104,7 @@ const state = reactive({
   selectedPersonName: "",
   calendarFilterStartDate: "",
   calendarFilterEndDate: "",
-  monitoringSubTab: "scope",
+  monitoringSubTab: "calendar",
   assessmentTab: "risk",
   expandedFlowIds: [],
   addWorkModalOpen: false,
@@ -106,7 +112,13 @@ const state = reactive({
   planConflictRecordModalOpen: false,
   selectedConflictPlanId: "",
   selectedConflictDateIso: "",
-  selectedConflictWorkDayId: ""
+  selectedConflictWorkDayId: "",
+  scheduleKeyNodeModalOpen: false,
+  scheduleKeyNodeError: "",
+  confirmModalOpen: false,
+  confirmModalTitle: "",
+  confirmModalMessage: "",
+  confirmModalAction: ""
 });
 
 const addWorkForm = reactive({
@@ -134,6 +146,7 @@ const monitorConflictModal = reactive({
 });
 
 const dragState = reactive({
+  pending: false,
   active: false,
   moved: false,
   planId: "",
@@ -512,6 +525,13 @@ const selectedPlanDetailWorks = computed(() => {
       .sort((left, right) => left.sortKey.localeCompare(right.sortKey));
   }
 
+  const workDays = getPlanWorkDays(plan);
+  if (workDays.length) {
+    return workDays
+      .map((workDay) => buildWorkItemFromWorkDay(plan, workDay))
+      .sort(compareDayWorks);
+  }
+
   return enumerateDates(plan.startDate, plan.endDate)
     .map((dateIso) => buildDerivedWorkItem(plan, dateIso))
     .sort((left, right) => `${left.dateIso}-${left.sortKey}`.localeCompare(`${right.dateIso}-${right.sortKey}`));
@@ -593,6 +613,15 @@ const filteredCalendarMonths = computed(() => {
 const monitorGanttZoomConfig = computed(() => {
   const index = Number(monitorGanttZoomLevel.value);
   return monitorGanttZoomLevels[index] || monitorGanttZoomLevels[2];
+});
+
+const scheduleKeyNodeForm = reactive({
+  id: "",
+  dateIso: TODAY_ISO,
+  title: "",
+  nodeType: "关键检查",
+  description: "",
+  blockScheduling: true
 });
 
 const monitorGanttVisibleRange = computed(() => {
@@ -3450,6 +3479,75 @@ function switchMonitoringSubTab(tab) {
   state.monitoringSubTab = tab;
 }
 
+function goToFlowPlanning() {
+  router.push("/planning");
+}
+
+function openScheduleKeyNodeModal(dateIso = monitorGanttVisibleRange.value.startDate, node = null) {
+  const target = node || null;
+  scheduleKeyNodeForm.id = target?.id || "";
+  scheduleKeyNodeForm.dateIso = target?.dateIso || dateIso || TODAY_ISO;
+  scheduleKeyNodeForm.title = target?.title || "";
+  scheduleKeyNodeForm.nodeType = target?.nodeType || "关键检查";
+  scheduleKeyNodeForm.description = target?.description || "";
+  scheduleKeyNodeForm.blockScheduling = target?.blockScheduling ?? true;
+  state.scheduleKeyNodeError = "";
+  state.scheduleKeyNodeModalOpen = true;
+}
+
+function closeScheduleKeyNodeModal() {
+  state.scheduleKeyNodeModalOpen = false;
+  state.scheduleKeyNodeError = "";
+}
+
+function saveScheduleKeyNode() {
+  if (!scheduleKeyNodeForm.dateIso || !scheduleKeyNodeForm.title.trim()) {
+    state.scheduleKeyNodeError = "请填写关键节点名称和日期。";
+    return;
+  }
+  saveGlobalKeyNode({
+    id: scheduleKeyNodeForm.id || `schedule-key-node-${Date.now()}`,
+    dateIso: scheduleKeyNodeForm.dateIso,
+    title: scheduleKeyNodeForm.title.trim(),
+    nodeType: scheduleKeyNodeForm.nodeType,
+    description: scheduleKeyNodeForm.description.trim(),
+    blockScheduling: scheduleKeyNodeForm.blockScheduling,
+    scopeFlowIds: ["all"],
+    gasTypes: state.selectedGas === "all" ? ["all"] : [state.selectedGas]
+  });
+  closeScheduleKeyNodeModal();
+  showToast("节点保存成功");
+}
+
+function removeScheduleKeyNode() {
+  if (!scheduleKeyNodeForm.id) return;
+  removeGlobalKeyNode(scheduleKeyNodeForm.id);
+  closeScheduleKeyNodeModal();
+  showToast("节点已删除");
+}
+
+function openConfirmModal(action, title, message) {
+  state.confirmModalAction = action;
+  state.confirmModalTitle = title;
+  state.confirmModalMessage = message;
+  state.confirmModalOpen = true;
+}
+
+function closeConfirmModal() {
+  state.confirmModalOpen = false;
+  state.confirmModalAction = "";
+  state.confirmModalTitle = "";
+  state.confirmModalMessage = "";
+}
+
+function confirmPendingAction() {
+  const action = state.confirmModalAction;
+  closeConfirmModal();
+  if (action === "delete-plan" && selectedPlanDetail.value) {
+    deleteSchedulePlan(selectedPlanDetail.value);
+  }
+}
+
 function getMonitorGanttDateFromPointer(event) {
   const axis = event.currentTarget?.querySelector?.(".monitor-gantt-axis") || event.currentTarget;
   if (isSingleDayMonitorGantt.value || !event.currentTarget?.querySelector?.(".monitor-gantt-axis")) {
@@ -3735,7 +3833,8 @@ function beginPlanDrag(strip, weekStartIso, event, workDay = null) {
   const trackRelativeX = Math.max(0, Math.min(trackRect.width, event.clientX - trackRect.left));
   const ganttOffset = Math.floor(trackRelativeX / Math.max(trackRect.width / monitorGanttVisibleRange.value.visibleDays, 1));
 
-  dragState.active = true;
+  dragState.pending = true;
+  dragState.active = false;
   dragState.moved = false;
   dragState.planId = strip.id;
   dragState.workDayId = workDay?.id || "";
@@ -3765,15 +3864,16 @@ function openPlanStripDayDetail(strip, weekStartIso, event) {
 }
 
 function onPlanPointerMove(event) {
-  if (!dragState.active) return;
+  if (!dragState.pending && !dragState.active) return;
   dragState.deltaX = event.clientX - dragState.startX;
   if (Math.abs(dragState.deltaX) > 6) {
+    dragState.active = true;
     dragState.moved = true;
   }
 }
 
 function onPlanPointerUp() {
-  if (!dragState.active) return;
+  if (!dragState.pending && !dragState.active) return;
 
   const shiftDays = Math.round(dragState.deltaX / Math.max(dragState.dayWidth, 1));
   const clickDateIso = dragState.clickDateIso;
@@ -3805,6 +3905,7 @@ function onPlanPointerUp() {
 }
 
 function detachPointerDrag() {
+  dragState.pending = false;
   dragState.active = false;
   dragState.moved = false;
   dragState.planId = "";
@@ -3890,6 +3991,128 @@ function shiftMonitoringPlanByDays(planId, shiftDays, candidatePlan = null) {
   }
 }
 
+function persistMonitoringCalendarPlan(targetPlan, nextPlans, extraPatch = {}) {
+  if (!targetPlan) return;
+  if (targetPlan.flowId === "fuel") {
+    const gasPacket = fuelPlanningPacket.value?.gasPackets?.[targetPlan.gasType] || {};
+    saveFuelGasCalendar(targetPlan.gasType, {
+      ...gasPacket,
+      calendarPlans: nextPlans,
+      planStatus: gasPacket.planStatus === "executing" ? gasPacket.planStatus : "draft",
+      lastEditedBy: currentUser.value?.roleLabel || "岗位人员",
+      ...extraPatch
+    });
+    return;
+  }
+  const flowPacket = genericPlanningPackets.value?.[targetPlan.flowId]?.gasPackets?.[targetPlan.gasType] || {};
+  saveGenericFlowCalendar(targetPlan.flowId, targetPlan.gasType, {
+    ...flowPacket,
+    calendarPlans: nextPlans,
+    planStatus: flowPacket.planStatus === "executing" ? flowPacket.planStatus : "draft",
+    lastEditedBy: currentUser.value?.roleLabel || "岗位人员",
+    ...extraPatch
+  });
+}
+
+function deleteSchedulePlan(plan) {
+  if (!plan) return;
+  deleteCalendarPlan(plan.flowId, plan.gasType, plan.sourcePlan?.id || plan.id);
+  closePlanDetail();
+  showToast("计划已删除");
+}
+
+function requestDeleteSelectedPlan() {
+  openConfirmModal("delete-plan", "确认删除计划？", "删除后该计划条及关联冲突记录将从日程规划中移除。");
+}
+
+function deleteScheduleWorkDay(row, workDay) {
+  if (!row || !workDay) return;
+  deleteCalendarWorkDay(row.flowId, row.gasType, row.sourcePlan?.id || row.id, workDay.id);
+  showToast("工作项已删除");
+}
+
+function toggleScheduleWorkLock(row, workDay) {
+  if (!row || !workDay || row.sourceType !== "calendar") return;
+  const sourcePlans = row.flowId === "fuel"
+    ? [...(fuelPlanningPacket.value?.gasPackets?.[row.gasType]?.calendarPlans || [])]
+    : [...(genericPlanningPackets.value?.[row.flowId]?.gasPackets?.[row.gasType]?.calendarPlans || [])];
+  const updatedPlans = sourcePlans.map((plan) => {
+    if (plan.id !== row.sourcePlan.id) return plan;
+    const workDays = getPlanWorkDays(row).map((item) =>
+      item.id === workDay.id
+        ? {
+            ...item,
+            manualLocked: !item.manualLocked,
+            manualLockedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+            manualLockedReason: !item.manualLocked ? "用户锁定" : ""
+          }
+        : item
+    );
+    return { ...plan, workDays };
+  });
+  persistMonitoringCalendarPlan(row, updatedPlans);
+  showToast(workDay.manualLocked ? "已取消锁定" : "已锁定该工作");
+}
+
+function findReorderDate(plan, workDay, occupiedDates) {
+  const candidates = [0, 1, 2, 3, 4, 5, -1, -2, 6, 7].map((offset) => addDays(workDay.dateIso, offset));
+  return candidates.find((dateIso) => {
+    const key = `${plan.gasType}-${dateIso}`;
+    const blocked = (monitoringKeyNodesByDate.value[dateIso] || []).some((node) => node.blockScheduling);
+    if (blocked || occupiedDates.has(key)) return false;
+    return true;
+  });
+}
+
+function optimizeScheduleReorder() {
+  const changedByPlan = new Map();
+  const unresolved = [];
+  const occupiedDates = new Set();
+
+  normalizedPlans.value.forEach((plan) => {
+    getPlanWorkDays(plan).forEach((workDay) => {
+      if (workDay.manualLocked) {
+        occupiedDates.add(`${plan.gasType}-${workDay.dateIso}`);
+      }
+    });
+  });
+
+  normalizedPlans.value
+    .filter((plan) => plan.sourceType === "calendar")
+    .forEach((plan) => {
+      const workDays = getPlanWorkDays(plan).map((workDay) => {
+        if (workDay.manualLocked) return { ...workDay };
+        const nextDate = findReorderDate(plan, workDay, occupiedDates);
+        if (!nextDate) {
+          unresolved.push({ plan, workDay });
+          return { ...workDay };
+        }
+        occupiedDates.add(`${plan.gasType}-${nextDate}`);
+        return { ...workDay, dateIso: nextDate };
+      });
+      changedByPlan.set(plan.id, { plan, workDays });
+    });
+
+  changedByPlan.forEach(({ plan, workDays }) => {
+    const sourcePlans = plan.flowId === "fuel"
+      ? [...(fuelPlanningPacket.value?.gasPackets?.[plan.gasType]?.calendarPlans || [])]
+      : [...(genericPlanningPackets.value?.[plan.flowId]?.gasPackets?.[plan.gasType]?.calendarPlans || [])];
+    const updatedPlans = sourcePlans.map((sourcePlan) =>
+      sourcePlan.id === plan.sourcePlan.id
+        ? {
+            ...sourcePlan,
+            workDays,
+            startDate: workDays.map((item) => item.dateIso).sort(compareIso)[0] || sourcePlan.startDate,
+            endDate: workDays.map((item) => item.dateIso).sort(compareIso).at(-1) || sourcePlan.endDate
+          }
+        : sourcePlan
+    );
+    persistMonitoringCalendarPlan(plan, updatedPlans);
+  });
+
+  showToast(unresolved.length ? "部分工作无法自动重排，已保留原日期" : "已完成智能重排");
+}
+
 window.addEventListener("blur", resetMonitorGanttInteractionState);
 
 onBeforeUnmount(() => {
@@ -3917,6 +4140,10 @@ function showMonitorGanttSingleDay(dateIso) {
 function handleMonitorWorkDayClick(row, workDay) {
   if (dragState.active) return;
   if (suppressMonitorPlanClick.value) return;
+  if (workDay?.hasConflict || getPlanConflictRecords(row, monitoringConflictRecords.value, workDay?.dateIso || "", workDay?.id || "").length) {
+    openMonitorPlanConflictRecords(row, workDay);
+    return;
+  }
   showMonitorGanttSingleDay(workDay.dateIso);
 }
 
@@ -4027,6 +4254,19 @@ function updateWorkProgress(workId, nextProgress) {
   }
 }
 
+function suggestedWorkProgress(workId) {
+  const evidence = evidenceStore.value[workId] || createEmptyEvidence();
+  const uploadedCount = Object.values(evidence).filter((item) => item?.uploaded).length;
+  if (uploadedCount >= 3) return 100;
+  if (uploadedCount === 2) return 75;
+  if (uploadedCount === 1) return 45;
+  return workProgressStore.value[workId]?.progress || 0;
+}
+
+function setWorkProgressFromInput(workId, value) {
+  updateWorkProgress(workId, Number(value));
+}
+
 function adjustWorkProgress(workId, delta) {
   const current = workProgressStore.value[workId] || createEmptyProgress();
   updateWorkProgress(workId, current.progress + delta);
@@ -4066,8 +4306,8 @@ function handleEvidenceUpload(event, workId, key) {
   <div class="fuel-page-stack">
     <div class="topbar">
       <div>
-        <h1>流程动态监控</h1>
-        <div class="muted">按气体系统汇总展示从特燃特气筹措到装备维修等全部规划流程，并支持按天查看工作安排和工作详情。</div>
+        <h1>日程规划</h1>
+        <div class="muted">按气体系统汇总展示从特燃特气筹措到装备维修等全部规划流程，并支持按天查看工作安排、冲突记录和工作详情。</div>
       </div>
     </div>
 
@@ -4096,7 +4336,7 @@ function handleEvidenceUpload(event, workId, key) {
         type="button"
         @click.stop.prevent="switchMonitoringSubTab('calendar')"
       >
-        <strong>大日历监控</strong>
+        <strong>日程规划</strong>
         <span>冲突 {{ monitoringConflictRecords.length }} 条</span>
       </button>
     </div>
@@ -4345,10 +4585,13 @@ function handleEvidenceUpload(event, workId, key) {
     <section v-if="state.monitoringSubTab === 'calendar'" class="panel">
       <div class="panel-head">
         <div>
-          <h3>大日历监控</h3>
-          <div class="muted">双击日历上的某一天，可弹出当天工作计划清单；跨天流程按条带方式连续展示。</div>
+          <h3>日程规划</h3>
+          <div class="muted">点击日历上的某一天，可查看当天工作卡片；跨天流程按条带方式连续展示。</div>
         </div>
         <div class="calendar-filter-toolbar">
+          <button class="button small" type="button" @click.stop.prevent="openScheduleKeyNodeModal(monitorGanttVisibleRange.startDate)">新增关键节点</button>
+          <button class="ghost small" type="button" @click.stop.prevent="goToFlowPlanning">流程规划</button>
+          <button class="ghost small" type="button" @click.stop.prevent="optimizeScheduleReorder">优化/重排</button>
           <label>
             <span>开始</span>
             <input v-model="state.calendarFilterStartDate" type="date">
@@ -4432,6 +4675,7 @@ function handleEvidenceUpload(event, workId, key) {
                 :class="{ today: column.isToday, weekend: column.isWeekend, holiday: Boolean(column.holidayLabel), 'has-key-node': column.keyNodes.length }"
                 :style="monitorGanttAxisCellStyle(column)"
                 @click.stop.prevent="openMonitorGanttDateDetail(column.dateIso)"
+                @dblclick.stop.prevent="openScheduleKeyNodeModal(column.dateIso)"
               >
                 <strong>{{ column.label }}</strong>
                 <span>{{ column.subLabel }}</span>
@@ -4481,11 +4725,15 @@ function handleEvidenceUpload(event, workId, key) {
                       class="monitor-gantt-conflict-segment"
                       :style="{ left: `${segment.leftPercent}%`, width: `${segment.widthPercent}%` }"
                     ></i>
-                    <span>{{ workDay.actionLabel || planStripLabel(row) }}</span>
+                    <span class="work-segment-title">{{ workDay.actionLabel || planStripLabel(row) }}</span>
+                    <span class="work-segment-lock" role="button" tabindex="0" @pointerdown.stop @click.stop.prevent="toggleScheduleWorkLock(row, workDay)">
+                      {{ workDay.manualLocked ? "锁" : "锁定" }}
+                    </span>
+                    <span class="work-segment-delete" role="button" tabindex="0" @pointerdown.stop @click.stop.prevent="deleteScheduleWorkDay(row, workDay)">×</span>
                   </button>
-                  <span class="plan-strip-label monitor-gantt-range-label">
+                  <button class="plan-strip-label monitor-gantt-range-label" type="button" @click.stop.prevent="openPlanDetail(row.id)">
                     {{ state.selectedGas === "all" ? `${row.gasLabel} · ${planStripLabel(row)}` : planStripLabel(row) }}
-                  </span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -4583,6 +4831,15 @@ function handleEvidenceUpload(event, workId, key) {
                       <div class="monitor-day-progress-bar">
                         <span :style="{ width: progressWidth(work.progressMeta.progress) }"></span>
                       </div>
+                      <input
+                        class="progress-range-input"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        :value="work.progressMeta.progress"
+                        @input="setWorkProgressFromInput(work.id, $event.target.value)"
+                      >
                       <div class="button-row monitor-day-progress-actions">
                         <button class="ghost small" type="button" @click.stop.prevent="adjustWorkProgress(work.id, -25)">-25%</button>
                         <button class="ghost small" type="button" @click.stop.prevent="adjustWorkProgress(work.id, 25)">+25%</button>
@@ -4644,6 +4901,64 @@ function handleEvidenceUpload(event, workId, key) {
         </div>
       </div>
     </section>
+
+    <div class="modal-overlay" :class="{ open: state.scheduleKeyNodeModalOpen }" @click.self="closeScheduleKeyNodeModal">
+      <div class="modal-card key-node-modal">
+        <div class="panel-head">
+          <div>
+            <h3>新增关键节点</h3>
+            <div class="muted">关键节点会参与日程规划的冲突提示和优化重排。</div>
+          </div>
+          <span class="chip warning">日程规划</span>
+        </div>
+        <div class="config-grid" style="margin-top: 14px;">
+          <label class="field">
+            <span>日期</span>
+            <input v-model="scheduleKeyNodeForm.dateIso" type="date">
+            <small v-if="state.scheduleKeyNodeError && !scheduleKeyNodeForm.dateIso" class="field-error">请选择关键节点日期</small>
+          </label>
+          <label class="field">
+            <span>关键节点名称</span>
+            <input v-model="scheduleKeyNodeForm.title" placeholder="例如：整体大检查">
+            <small v-if="state.scheduleKeyNodeError && !scheduleKeyNodeForm.title.trim()" class="field-error">请填写关键节点名称</small>
+          </label>
+          <label class="field">
+            <span>节点类型</span>
+            <select v-model="scheduleKeyNodeForm.nodeType">
+              <option>关键检查</option>
+              <option>质量确认</option>
+              <option>外部保障</option>
+              <option>禁排窗口</option>
+              <option>其他</option>
+            </select>
+          </label>
+          <label class="field wide">
+            <span>说明</span>
+            <textarea v-model="scheduleKeyNodeForm.description" rows="3" placeholder="说明关键节点约束和注意事项"></textarea>
+          </label>
+          <label class="check-row wide">
+            <input v-model="scheduleKeyNodeForm.blockScheduling" type="checkbox">
+            <span>阻止自动排程，优化重排时必须避让该日期</span>
+          </label>
+        </div>
+        <div class="button-row" style="margin-top: 18px;">
+          <button class="ghost" type="button" @click="closeScheduleKeyNodeModal">取消</button>
+          <button v-if="scheduleKeyNodeForm.id" class="danger-ghost" type="button" @click="removeScheduleKeyNode">删除</button>
+          <button class="button" type="button" @click="saveScheduleKeyNode">保存关键节点</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" :class="{ open: state.confirmModalOpen }" @click.self="closeConfirmModal">
+      <div class="modal-card confirm-dialog">
+        <h3>{{ state.confirmModalTitle }}</h3>
+        <p class="muted">{{ state.confirmModalMessage }}</p>
+        <div class="button-row" style="margin-top: 18px;">
+          <button class="ghost" type="button" @click="closeConfirmModal">取消</button>
+          <button class="danger-ghost" type="button" @click="confirmPendingAction">确认删除</button>
+        </div>
+      </div>
+    </div>
 
     <div class="modal-overlay live-conflict-overlay" :class="{ open: monitorConflictModal.open }">
       <div class="modal-card live-conflict-modal">
@@ -5000,6 +5315,7 @@ function handleEvidenceUpload(event, workId, key) {
         </div>
 
         <div class="button-row" style="margin-top: 18px;">
+          <button v-if="selectedPlanDetail" class="danger-ghost" type="button" @click.stop.prevent="requestDeleteSelectedPlan">删除计划</button>
           <button class="ghost" type="button" @click.stop.prevent="closePlanDetail">关闭</button>
         </div>
       </div>
@@ -5094,11 +5410,20 @@ function handleEvidenceUpload(event, workId, key) {
                       <span class="monitor-day-progress-label">进度</span>
                       <strong>{{ work.progressMeta.progress }}%</strong>
                     </div>
-                    <div class="monitor-day-progress-bar">
-                      <span :style="{ width: progressWidth(work.progressMeta.progress) }"></span>
-                    </div>
-                    <div class="button-row monitor-day-progress-actions">
-                      <button class="ghost small" type="button" @click.stop.prevent="adjustWorkProgress(work.id, -25)">-25%</button>
+                      <div class="monitor-day-progress-bar">
+                        <span :style="{ width: progressWidth(work.progressMeta.progress) }"></span>
+                      </div>
+                      <input
+                        class="progress-range-input"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        :value="work.progressMeta.progress"
+                        @input="setWorkProgressFromInput(work.id, $event.target.value)"
+                      >
+                      <div class="button-row monitor-day-progress-actions">
+                        <button class="ghost small" type="button" @click.stop.prevent="adjustWorkProgress(work.id, -25)">-25%</button>
                       <button class="ghost small" type="button" @click.stop.prevent="adjustWorkProgress(work.id, 25)">+25%</button>
                       <button class="button small" type="button" @click.stop.prevent="markWorkCompleted(work.id)">完成</button>
                     </div>
@@ -5374,6 +5699,25 @@ function handleEvidenceUpload(event, workId, key) {
                 <div class="monitor-day-progress-bar large">
                   <span :style="{ width: progressWidth(selectedWorkProgress.progress) }"></span>
                 </div>
+                <div class="progress-slider-row">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    :value="selectedWorkProgress.progress"
+                    @input="setWorkProgressFromInput(selectedWork.id, $event.target.value)"
+                  >
+                  <input
+                    class="progress-number-input"
+                    type="number"
+                    min="0"
+                    max="100"
+                    :value="selectedWorkProgress.progress"
+                    @change="setWorkProgressFromInput(selectedWork.id, $event.target.value)"
+                  >
+                </div>
+                <div class="muted">系统根据已上传材料建议完成度：{{ suggestedWorkProgress(selectedWork.id) }}%。可拖动滑块手动调整。</div>
                 <div class="button-row">
                   <button class="ghost" type="button" @click.stop.prevent="adjustWorkProgress(selectedWork.id, -25)">回退 25%</button>
                   <button class="ghost" type="button" @click.stop.prevent="adjustWorkProgress(selectedWork.id, 25)">录入 +25%</button>

@@ -2,7 +2,7 @@
 const items = [
   { label: "首页总览", sub: "Overview", to: "/", icon: "overview" },
   { label: "流程自主规划", sub: "Plan", to: "/planning", icon: "plan" },
-  { label: "流程动态监控", sub: "Monitor", to: "/monitoring", icon: "monitor" },
+  { label: "日程规划", sub: "Schedule", to: "/monitoring", icon: "monitor" },
   { label: "流程智能评估", sub: "Assess", to: "/evaluation", icon: "assess" },
   { label: "流程智能查询", sub: "Search", to: "/query", icon: "query" },
   { label: "工作规则管理", sub: "Rules", to: "/rules", icon: "rules" }

@@ -35,7 +35,7 @@ const router = createRouter({
 router.beforeEach((to) => {
   const { currentUser } = usePlatformState();
   if (to.meta.public) {
-    if (to.name === "login" && currentUser.value) return "/";
+    if (to.name === "login" && currentUser.value) return "/monitoring";
     return true;
   }
   if (!currentUser.value) {

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive } from "vue";
+import { reactive } from "vue";
 import { useRouter } from "vue-router";
 import { usePlatformState } from "../composables/usePlatformState";
 
@@ -12,8 +12,6 @@ const form = reactive({
   username: authProfiles.engineer.username,
   password: authProfiles.engineer.password
 });
-
-const errorMessage = computed(() => "");
 
 function applyPreset(role) {
   form.role = role;
@@ -35,11 +33,7 @@ function submitLogin() {
   }
 
   showToast(`已登录：${result.user.roleLabel}`);
-  if (result.user.role === "engineer") {
-    router.push("/planning");
-    return;
-  }
-  router.push("/planning/fuel");
+  router.push("/monitoring");
 }
 </script>
 
@@ -47,7 +41,7 @@ function submitLogin() {
   <div class="login-shell">
     <section class="login-panel">
       <div class="login-ribbon">
-        <span>软件标题名称</span>
+        <span>智能流程辅助管理平台</span>
         <strong>智能流程辅助管理配置项</strong>
       </div>
 
@@ -55,7 +49,7 @@ function submitLogin() {
         <div class="login-copy">
           <div class="eyebrow">身份登录</div>
           <h1>进入智能流程辅助管理系统</h1>
-          <p>先选择身份完成登录。系统工程师登录后进入流程自主规划总入口；指挥人员和操作人员登录后进入特燃特气筹措工作规划界面。</p>
+          <p>选择身份后进入日程规划页面，可继续查看流程规划、特燃特气任务、维修需求和执行评估。</p>
 
           <div class="login-accounts">
             <div class="login-account-card">
@@ -91,6 +85,8 @@ function submitLogin() {
             <select v-model="form.gasType">
               <option value="oxygen">氧气</option>
               <option value="hydrogen">氢气</option>
+              <option value="nitrogen">氮气</option>
+              <option value="helium">氦气</option>
             </select>
           </div>
 

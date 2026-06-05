@@ -5,6 +5,7 @@ import { usePlatformState } from "../composables/usePlatformState";
 const { assistantOpen, logout } = usePlatformState();
 
 const now = ref(new Date());
+const logoutConfirmOpen = ref(false);
 let timerId = null;
 
 onMounted(() => {
@@ -36,7 +37,12 @@ function toggleAssistant() {
   assistantOpen.value = !assistantOpen.value;
 }
 
-function handleLogout() {
+function requestLogout() {
+  logoutConfirmOpen.value = true;
+}
+
+function confirmLogout() {
+  logoutConfirmOpen.value = false;
   logout();
   window.location.hash = "#/login";
 }
@@ -55,11 +61,22 @@ function handleLogout() {
       <button class="ghost small" type="button" @click="toggleAssistant">
         {{ assistantOpen ? "关闭助手" : "打开助手" }}
       </button>
-      <button class="ghost small" type="button" @click="handleLogout">退出登录</button>
+      <button class="ghost small" type="button" @click="requestLogout">退出登录</button>
       <div class="titlebar-clock">
         <strong>{{ timeLabel() }}</strong>
         <span>{{ dateLabel() }}</span>
       </div>
     </div>
   </header>
+
+  <div class="modal-overlay" :class="{ open: logoutConfirmOpen }" @click.self="logoutConfirmOpen = false">
+    <div class="modal-card confirm-dialog">
+      <h3>确定退出？</h3>
+      <p class="muted">退出后将返回登录页面，当前已保存的数据不会丢失。</p>
+      <div class="button-row" style="margin-top: 18px;">
+        <button class="ghost" type="button" @click="logoutConfirmOpen = false">取消</button>
+        <button class="button" type="button" @click="confirmLogout">确认退出</button>
+      </div>
+    </div>
+  </div>
 </template>

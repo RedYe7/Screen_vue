@@ -10,6 +10,7 @@ const {
   fuelPlanningToday,
   saveFuelPlanningPacket,
   markFuelGasReviewed,
+  saveFuelReviewDecision,
   saveFuelGasCalendar,
   showToast,
   catalog
@@ -150,6 +151,16 @@ const conflictRecordModal = reactive({
   planId: "",
   workDayId: "",
   dateIso: ""
+});
+
+const dispatchConfirmModal = reactive({
+  open: false
+});
+
+const reviewRejectModal = reactive({
+  open: false,
+  reason: "",
+  error: ""
 });
 
 const workDayModal = reactive({
@@ -2135,6 +2146,10 @@ function applySystemFetch() {
 }
 
 function generateMeasurement() {
+  if (!engineerForm.messageTemplate) {
+    showToast("请先选择报文模板。");
+    return;
+  }
   const startIso = formStartIso();
   const endIso = formEndIso();
 
@@ -2197,6 +2212,15 @@ function generateMeasurement() {
 
 function dispatchPacket() {
   if (!canDispatch.value) return;
+  dispatchConfirmModal.open = true;
+}
+
+function closeDispatchConfirmModal() {
+  dispatchConfirmModal.open = false;
+}
+
+function confirmDispatchPacket() {
+  if (!canDispatch.value) return;
   const next = clone(packet.value);
   next.status = "dispatched";
   next.lastUpdatedAt = new Date().toLocaleString("zh-CN", { hour12: false });
@@ -2207,13 +2231,47 @@ function dispatchPacket() {
     };
   });
   saveFuelPlanningPacket(next);
-  showToast("测算数据已按气体系统下发，等待各系统指挥员确认。");
+  closeDispatchConfirmModal();
+  showToast("任务下发成功");
 }
 
 function confirmReview() {
   if (!isCommander.value) return;
   markFuelGasReviewed(activeGasType.value, currentUser.value?.roleLabel || "指挥人员");
   showToast(`${activeGasLabel.value}系统已完成数据审签确认。`);
+}
+
+function openRejectReviewModal() {
+  reviewRejectModal.reason = "";
+  reviewRejectModal.error = "";
+  reviewRejectModal.open = true;
+}
+
+function closeRejectReviewModal() {
+  reviewRejectModal.open = false;
+  reviewRejectModal.error = "";
+}
+
+function rejectReview() {
+  if (!reviewRejectModal.reason.trim()) {
+    reviewRejectModal.error = "请填写驳回理由。";
+    return;
+  }
+  saveFuelReviewDecision(activeGasType.value, {
+    status: "rejected",
+    reason: reviewRejectModal.reason.trim(),
+    reviewedBy: currentUser.value?.roleLabel || "指挥人员"
+  });
+  closeRejectReviewModal();
+  showToast("已驳回任务数据");
+}
+
+function updateReportRow(rowId, field, value) {
+  const next = clone(packet.value);
+  next.reportRows = (next.reportRows || []).map((row) =>
+    row.id === rowId ? { ...row, [field]: Number(value) } : row
+  );
+  saveFuelPlanningPacket(next);
 }
 
 function openKeyNodeModal(dateIso, node = null) {
@@ -2798,10 +2856,10 @@ function openGanttWorkDetail(work) {
               <tr v-for="row in packet.reportRows" :key="row.id">
                 <td>{{ row.gasLabel }}</td>
                 <td>{{ row.scene }}</td>
-                <td>{{ row.demand }}</td>
-                <td>{{ row.production }}</td>
-                <td>{{ row.guarantee }}</td>
-                <td>{{ row.stock }}</td>
+                <td><input class="table-number-input" type="number" :value="row.demand" @change="updateReportRow(row.id, 'demand', $event.target.value)"></td>
+                <td><input class="table-number-input" type="number" :value="row.production" @change="updateReportRow(row.id, 'production', $event.target.value)"></td>
+                <td><input class="table-number-input" type="number" :value="row.guarantee" @change="updateReportRow(row.id, 'guarantee', $event.target.value)"></td>
+                <td><input class="table-number-input" type="number" :value="row.stock" @change="updateReportRow(row.id, 'stock', $event.target.value)"></td>
               </tr>
             </tbody>
           </table>
@@ -2926,11 +2984,13 @@ function openGanttWorkDetail(work) {
 
           <div class="button-row" style="margin-top: 16px;">
             <button v-if="isCommander && !visibleGasPacket.reviewed" class="ghost" type="button" @click="confirmReview">审查确认</button>
+            <button v-if="isCommander && !visibleGasPacket.reviewed" class="danger-ghost" type="button" @click="openRejectReviewModal">驳回</button>
             <button v-if="isCommander" class="button" type="button" :disabled="!canGenerateCalendar" @click="generateCalendarPlan">生成计划</button>
             <button v-if="isCommander && editablePlans.length" class="ghost" type="button" @click="confirmCalendarAdjustments">确认调整</button>
             <button v-if="isCommander && editablePlans.length" class="ghost" type="button" @click="openSmartReorderModal">智能重排</button>
             <button v-if="isCommander && editablePlans.length" class="danger-ghost" type="button" @click="openClearPlanModal">清空计划</button>
-            <span class="chip" v-if="visibleGasPacket.reviewed">已确认：{{ visibleGasPacket.reviewedBy }} / {{ visibleGasPacket.reviewedAt }}</span>
+            <span class="chip" v-if="visibleGasPacket.reviewStatus === 'rejected'">已驳回：{{ visibleGasPacket.reviewRejectReason }}</span>
+            <span class="chip" v-else-if="visibleGasPacket.reviewed">已确认：{{ visibleGasPacket.reviewedBy }} / {{ visibleGasPacket.reviewedAt }}</span>
             <span class="chip" v-else>状态：{{ packet.status === "dispatched" ? "已下发待确认" : "未下发" }}</span>
             <span class="chip" v-if="editablePlans.length" :class="{ active: localPlanStatus === 'confirmed' }">计划状态：{{ localPlanStatus === "confirmed" ? "已确认" : "草稿" }}</span>
           </div>
@@ -3423,6 +3483,33 @@ function openGanttWorkDetail(work) {
         <div class="button-row" style="margin-top: 18px;">
           <button class="ghost" type="button" @click="acceptConflictReminder">接受提醒并复原</button>
           <button class="button" type="button" @click="ignoreConflictAndApply">忽略提醒并继续调整</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" :class="{ open: dispatchConfirmModal.open }" @click.self="closeDispatchConfirmModal">
+      <div class="modal-card confirm-dialog">
+        <h3>确定下发该任务吗？</h3>
+        <p class="muted">下发后各气体系统指挥人员将可以审签并生成任务规划。</p>
+        <div class="button-row" style="margin-top: 18px;">
+          <button class="ghost" type="button" @click="closeDispatchConfirmModal">取消</button>
+          <button class="button" type="button" @click="confirmDispatchPacket">确认下发</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" :class="{ open: reviewRejectModal.open }" @click.self="closeRejectReviewModal">
+      <div class="modal-card confirm-dialog">
+        <h3>驳回任务数据</h3>
+        <p class="muted">请输入驳回理由，系统工程师可据此修改后重新下发。</p>
+        <label class="field">
+          <span>驳回理由</span>
+          <textarea v-model="reviewRejectModal.reason" rows="4" placeholder="请输入异常说明或修改意见"></textarea>
+          <small v-if="reviewRejectModal.error" class="field-error">{{ reviewRejectModal.error }}</small>
+        </label>
+        <div class="button-row" style="margin-top: 18px;">
+          <button class="ghost" type="button" @click="closeRejectReviewModal">取消</button>
+          <button class="danger-ghost" type="button" @click="rejectReview">确认驳回</button>
         </div>
       </div>
     </div>
